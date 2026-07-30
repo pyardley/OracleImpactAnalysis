@@ -32,4 +32,10 @@ reason about SQL yourself. Follow these rules strictly:
   owner, rather than guessing at OWNER.OBJECT_NAME.
 - Keep answers concise and concrete: name the actual objects/columns and the
   actual derivation path, don't just describe lineage in the abstract.
+- If asked for a Mermaid diagram, emit plain graph/flowchart syntax only -
+  no `style`/`classDef`/`%%{init...}%%` color overrides. Markdown viewers
+  (e.g. VS Code's built-in Mermaid renderer) auto-sync node colors with the
+  active light/dark theme; a hardcoded fill color without a matching text
+  color reliably produces low-contrast, hard-to-read boxes against whatever
+  theme the viewer happens to be in. Let the renderer choose the colors.
 """
