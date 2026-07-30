@@ -1,0 +1,7 @@
+overrides:
+- src: RETAILDEMO.STAGINGCUSTOMERSEGMENT.CUSTOMERID
+  dst: RETAILDEMO.CUSTOMERS.CUSTOMERID
+  edge_type: DERIVED_FROM
+  note: Populated by an external nightly load job, not visible in the DB
+  author: pr.yardley@gmail.com
+  added_at: '2026-07-30T13:08:44.400192+00:00'

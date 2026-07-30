@@ -1,0 +1,62 @@
+# OIA configuration. No secrets here - those live in .env (see .env.example).
+
+# "all" works with only the object grants the connecting user already has.
+# "dba" requires SELECT_CATALOG_ROLE / explicit DBA_* grants and sees across
+# all schemas - recommended for real multi-schema enterprise deployments.
+dictionary_scope: all
+
+schemas:
+  # Empty include = the connecting user's own schema only (fine for a
+  # single-schema demo user like retaildemo - ALL_* views would otherwise
+  # also surface PUBLIC synonyms and vendor schemas like DVSYS/DVF that the
+  # user merely has grants on). Add owner names here to widen scope
+  # explicitly for multi-schema environments.
+  include: []
+  exclude:
+    - SYS
+    - SYSTEM
+    - XDB
+    - OUTLN
+    - ORDS_METADATA
+    - ORDS_PUBLIC_USER
+    - APPQOSSYS
+    - DBSFWUSER
+    - DBSNMP
+    - GSMADMIN_INTERNAL
+    - GGSYS
+    - ANONYMOUS
+    - CTXSYS
+    - MDSYS
+    - OLAPSYS
+    - LBACSYS
+    - WMSYS
+    - REMOTE_SCHEDULER_AGENT
+
+# Rule engine that decides which graph nodes count as "reports" for
+# impact-analysis purposes. All three are OR'd together; an object is a
+# report if it matches ANY rule. RetailDemo has no built-in reporting layer,
+# so this starts conservative (name-based convention) - edit to match
+# whatever real environment this is pointed at.
+report_rules:
+  schema_patterns: []          # e.g. ["REPORTING", "BI_.*"]
+  name_prefixes:
+    - "RPT_"
+    - "VW_RPT_"
+    - "REPORT_"
+  name_suffixes:
+    - "_REPORT"
+  allowlist: []                 # explicit "OWNER.OBJECT_NAME" entries
+
+agent:
+  # Cheap/fast model, matching CorporateRAGPostgres's configured cheap LLM
+  # (openai/gpt-4o-mini) as closely as OIA's Anthropic-only agent allows -
+  # swap to claude-sonnet-5 or claude-opus-5 for harder multi-hop questions.
+  model: claude-haiku-4-5-20251001
+  effort: medium
+  max_tokens: 4096
+
+graph:
+  sqlite_path: data/oia.sqlite
+
+logging:
+  level: INFO
