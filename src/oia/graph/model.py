@@ -75,6 +75,7 @@ class Edge:
     source_object: str | None = None
     source_line_range: tuple[int, int] | None = None
     transform_expression: str | None = None
+    filter_expression: str | None = None
     edge_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     extracted_at: str = field(default_factory=now_iso)
 
@@ -89,6 +90,7 @@ class Edge:
             self.source_object,
             json.dumps(list(self.source_line_range)) if self.source_line_range else None,
             self.transform_expression,
+            self.filter_expression,
             self.extracted_at,
         )
 
@@ -116,6 +118,7 @@ def edge_from_row(row) -> Edge:
         source_object=row["source_object"],
         source_line_range=tuple(json.loads(row["source_line_range"])) if row["source_line_range"] else None,
         transform_expression=row["transform_expression"],
+        filter_expression=row["filter_expression"],
         extracted_at=row["extracted_at"],
     )
 
@@ -145,6 +148,7 @@ def load_graph(store: SqliteStore) -> nx.MultiDiGraph:
             source_object=row["source_object"],
             source_line_range=json.loads(row["source_line_range"]) if row["source_line_range"] else None,
             transform_expression=row["transform_expression"],
+            filter_expression=row["filter_expression"],
             extracted_at=row["extracted_at"],
         )
     return g

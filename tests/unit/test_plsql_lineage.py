@@ -81,6 +81,49 @@ def test_dynamic_sql_recorded_as_unresolved_not_guessed(store):
     assert "EXECUTE IMMEDIATE" in rows[0]["raw_text"].upper()
 
 
+FILTER_PROC_BODY = """
+PROCEDURE SCAN_ACTIVE_ORDERS IS
+  v_id NUMBER;
+BEGIN
+  SELECT c.customer_id INTO v_id
+  FROM customers c
+  JOIN orders o ON o.customer_id = c.customer_id AND o.status = 'Completed'
+  WHERE c.is_active = 1;
+END SCAN_ACTIVE_ORDERS;
+"""
+
+
+def test_join_on_and_where_conditions_captured_as_filter_expression(store):
+    """Regression test mirroring the real ChurnRisk procedure's pattern:
+    an eligibility condition embedded in a JOIN...ON clause (not just a plain
+    WHERE) must still surface as filter_expression on the resulting
+    object-level READS_FROM edges - this is exactly how
+    'only Completed orders' was previously invisible in OIA's graph.
+    """
+    node_ids = {
+        object_node_id(OWNER, "CUSTOMERS"),
+        object_node_id(OWNER, "ORDERS"),
+        object_node_id(OWNER, "SCAN_ACTIVE_ORDERS"),
+    }
+    store.bulk_insert(
+        "raw_source",
+        ["owner", "object_name", "object_type", "body"],
+        [(OWNER, "SCAN_ACTIVE_ORDERS", "PROCEDURE", FILTER_PROC_BODY)],
+    )
+    store.commit()
+
+    edges, _parse_errors = build_plsql_lineage_edges(store, node_ids)
+    reads = {e.dst_node_id: e for e in edges if e.edge_type == "READS_FROM"}
+
+    assert object_node_id(OWNER, "CUSTOMERS") in reads
+    assert object_node_id(OWNER, "ORDERS") in reads
+    for edge in reads.values():
+        assert edge.filter_expression is not None
+        assert "IS_ACTIVE" in edge.filter_expression.upper()
+        assert "STATUS" in edge.filter_expression.upper()
+        assert "COMPLETED" in edge.filter_expression.upper()
+
+
 MARGIN_PROC_BODY = """
 PROCEDURE BUILD_MARGIN_REPORT IS
 BEGIN
@@ -133,6 +176,76 @@ def test_insert_select_resolves_unaliased_computed_expression(store):
         column_node_id(OWNER, "STAGING_PRODUCT_AGG", "TOTAL_REVENUE"),
         column_node_id(OWNER, "STAGING_PRODUCT_AGG", "TOTAL_COST"),
     }
+
+
+CTE_AGG_PROC_BODY = """
+PROCEDURE BUILD_CUSTOMER_TOTALS IS
+BEGIN
+  INSERT INTO report_customer_totals (customer_id, total_net_amount)
+  WITH agg AS (
+      SELECT customer_id, SUM(net_amount) AS total_net_amount
+      FROM active_orders
+      WHERE is_eligible = 1
+      GROUP BY customer_id
+  )
+  SELECT customer_id, total_net_amount FROM agg;
+END BUILD_CUSTOMER_TOTALS;
+"""
+
+
+def test_insert_select_captures_real_transform_through_a_cte(store):
+    """Regression test: a leaf's own sqlglot Node.expression is just its
+    FROM-clause table reference (e.g. "ACTIVE_ORDERS AS ACTIVE_ORDERS"), not
+    the computation that produced it - the real transform (here SUM(...))
+    lives on the leaf's parent node, one hop closer to the root. Using the
+    leaf's own expression silently records garbled table-alias text instead
+    of the aggregate/function that's actually the point of a lineage tool.
+    Also verifies the WHERE clause gating which rows count is captured as
+    `filter_expression` - eligibility criteria a plain column-to-column edge
+    wouldn't otherwise reveal.
+    """
+    node_ids = {
+        object_node_id(OWNER, "ACTIVE_ORDERS"),
+        object_node_id(OWNER, "REPORT_CUSTOMER_TOTALS"),
+        object_node_id(OWNER, "BUILD_CUSTOMER_TOTALS"),
+    }
+    col_rows = [
+        (OWNER, "ACTIVE_ORDERS", "CUSTOMER_ID", "NUMBER", "Y", 1),
+        (OWNER, "ACTIVE_ORDERS", "NET_AMOUNT", "NUMBER", "Y", 2),
+        (OWNER, "REPORT_CUSTOMER_TOTALS", "CUSTOMER_ID", "NUMBER", "Y", 1),
+        (OWNER, "REPORT_CUSTOMER_TOTALS", "TOTAL_NET_AMOUNT", "NUMBER", "Y", 2),
+    ]
+    for row in col_rows:
+        node_ids.add(column_node_id(OWNER, row[1], row[2]))
+    store.bulk_insert(
+        "raw_columns", ["owner", "object_name", "column_name", "data_type", "nullable", "column_id"], col_rows
+    )
+    store.bulk_insert(
+        "raw_source",
+        ["owner", "object_name", "object_type", "body"],
+        [(OWNER, "BUILD_CUSTOMER_TOTALS", "PROCEDURE", CTE_AGG_PROC_BODY)],
+    )
+    store.commit()
+
+    edges, _parse_errors = build_plsql_lineage_edges(store, node_ids)
+    total_id = column_node_id(OWNER, "REPORT_CUSTOMER_TOTALS", "TOTAL_NET_AMOUNT")
+    matches = [
+        e for e in edges
+        if e.edge_type == "DERIVED_FROM"
+        and e.src_node_id == total_id
+        and e.dst_node_id == column_node_id(OWNER, "ACTIVE_ORDERS", "NET_AMOUNT")
+    ]
+    assert len(matches) == 1
+    transform = matches[0].transform_expression
+    assert transform is not None
+    assert "SUM" in transform.upper()
+    assert "NET_AMOUNT" in transform.upper()
+    # the bug produced the FROM-clause table reference instead
+    assert "ACTIVE_ORDERS AS ACTIVE_ORDERS" != transform.upper().replace('"', "")
+
+    filter_expr = matches[0].filter_expression
+    assert filter_expr is not None
+    assert "IS_ELIGIBLE" in filter_expr.upper()
 
 
 def test_trigger_gets_free_writes_to_edge(store):

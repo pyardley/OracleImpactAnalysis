@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS graph_edges (
   source_object TEXT,
   source_line_range TEXT,
   transform_expression TEXT,
+  filter_expression TEXT,
   extracted_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_graph_edges_src ON graph_edges(src_node_id);

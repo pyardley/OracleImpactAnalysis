@@ -31,6 +31,7 @@ def _step_dict(step: PathStep) -> dict:
         "method": step.method,
         "source_object": step.source_object,
         "transform_expression": step.transform_expression,
+        "filter_expression": step.filter_expression,
     }
 
 
@@ -54,6 +55,7 @@ def _direct_edges(g: nx.MultiDiGraph, node_id: str) -> tuple[list[dict], list[di
             "confidence": d["confidence"],
             "method": d["method"],
             "transform_expression": d.get("transform_expression"),
+            "filter_expression": d.get("filter_expression"),
         }
         for _u, v, d in g.out_edges(node_id, data=True)
     ]
@@ -64,14 +66,18 @@ def _direct_edges(g: nx.MultiDiGraph, node_id: str) -> tuple[list[dict], list[di
             "confidence": d["confidence"],
             "method": d["method"],
             "transform_expression": d.get("transform_expression"),
+            "filter_expression": d.get("filter_expression"),
         }
         for u, _v, d in g.in_edges(node_id, data=True)
     ]
     return out_edges, in_edges
 
 
-def build_tools(g: nx.MultiDiGraph, unresolved: list[dict]) -> list:
-    """Builds the tool set bound to one hydrated graph + unresolved-lineage list."""
+def build_tools(g: nx.MultiDiGraph, unresolved: list[dict], sources: dict[str, str] | None = None) -> list:
+    """Builds the tool set bound to one hydrated graph + unresolved-lineage
+    list + raw object source text (`sources`, keyed by node id - see
+    oia.graph.sources.load_object_sources)."""
+    sources = sources or {}
 
     @beta_tool
     def search_objects(name_pattern: str, object_types: list[str] | None = None) -> str:
@@ -229,6 +235,29 @@ def build_tools(g: nx.MultiDiGraph, unresolved: list[dict]) -> list:
         return json.dumps({"start": node_id, "reports": reports})
 
     @beta_tool
+    def get_object_source(object_name: str) -> str:
+        """Get the actual PL/SQL source code (procedure/function/trigger body,
+        or the defining SELECT for a view). This is ground truth, not a
+        parser's approximation - use it to confirm or quote the *exact*
+        formula/logic instead of guessing from a function's name or from a
+        transform_expression snippet, and to see multi-statement structure
+        (e.g. staged CTEs, WHERE-clause eligibility rules) that no single
+        lineage edge captures on its own. Not every object has source (e.g. a
+        base TABLE has none).
+
+        Args:
+            object_name: OBJECT_NAME or OWNER.OBJECT_NAME.
+        """
+        try:
+            node_id = resolve_object(g, object_name)
+        except ResolutionError as exc:
+            return json.dumps({"error": str(exc)})
+        source = sources.get(node_id)
+        if source is None:
+            return json.dumps({"node_id": node_id, "source": None, "note": "No source text for this object type."})
+        return json.dumps({"node_id": node_id, "source": source})
+
+    @beta_tool
     def get_unresolved_lineage(object_name: str) -> str:
         """List dynamic-SQL / parse-failure gap markers recorded for an object -
         things OIA could not statically resolve. If a trace or impact result
@@ -244,6 +273,7 @@ def build_tools(g: nx.MultiDiGraph, unresolved: list[dict]) -> list:
     return [
         search_objects,
         get_object_metadata,
+        get_object_source,
         trace_column_lineage,
         impact_of_change,
         list_reports_affected,

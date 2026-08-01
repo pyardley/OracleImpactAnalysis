@@ -14,6 +14,7 @@ import networkx as nx
 from oia.agent.grounding import SYSTEM_PROMPT
 from oia.agent.tools import build_tools
 from oia.config.settings import Settings
+from oia.graph.sources import load_object_sources
 from oia.storage.sqlite_store import SqliteStore
 
 if TYPE_CHECKING:
@@ -56,11 +57,12 @@ def run_agent(
     store = SqliteStore(settings.sqlite_path)
     try:
         unresolved = [dict(r) for r in store.unresolved_lineage()]
+        sources = load_object_sources(store)
     finally:
         store.close()
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    tools = build_tools(g, unresolved)
+    tools = build_tools(g, unresolved, sources)
 
     runner = _build_runner(client, settings, question, tools, include_effort=True)
     try:

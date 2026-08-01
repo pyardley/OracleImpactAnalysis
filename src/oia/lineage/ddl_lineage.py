@@ -16,7 +16,7 @@ from collections import defaultdict
 from sqlglot.lineage import lineage as sqlglot_lineage
 
 from oia.graph.model import Edge, column_node_id, object_node_id
-from oia.lineage._common import lineage_leaves, schema_by_owner
+from oia.lineage._common import lineage_leaves, schema_by_owner, summarize_path
 from oia.storage.sqlite_store import SqliteStore
 
 logger = logging.getLogger("oia.lineage.ddl")
@@ -65,13 +65,14 @@ def build_ddl_lineage_edges(
                 parse_errors += 1
                 continue
 
-            for leaf in lineage_leaves(root):
+            for leaf, path in lineage_leaves(root):
                 src_owner = leaf.source.db or owner
                 src_table = leaf.source.name
                 src_column = leaf.name.split(".")[-1]
                 src_id = column_node_id(src_owner, src_table, src_column)
                 if src_id not in node_ids or src_id == dst_col_id:
                     continue
+                transform_expr, filter_expr = summarize_path(path, dialect="oracle")
                 edges.append(
                     Edge(
                         edge_type="DERIVED_FROM",
@@ -80,9 +81,8 @@ def build_ddl_lineage_edges(
                         confidence="high",
                         method="ddl_parse",
                         source_object=dst_object_id,
-                        transform_expression=(
-                            leaf.expression.sql(dialect="oracle") if leaf.expression is not None else None
-                        ),
+                        transform_expression=transform_expr,
+                        filter_expression=filter_expr,
                     )
                 )
 

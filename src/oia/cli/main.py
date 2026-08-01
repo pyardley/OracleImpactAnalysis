@@ -76,6 +76,7 @@ def _step_dict(step) -> dict:
         "method": step.method,
         "source_object": step.source_object,
         "transform_expression": step.transform_expression,
+        "filter_expression": step.filter_expression,
     }
 
 
@@ -160,6 +161,10 @@ def trace(
             chain = " -> ".join([node_id, *[s.dst for s in path]])
             last = path[-1]
             console.print(f"  {chain}  [dim]({last.confidence}, {last.method})[/dim]")
+            if last.transform_expression:
+                console.print(f"      [dim]transform:[/dim] {last.transform_expression}")
+            if last.filter_expression:
+                console.print(f"      [dim]filter:[/dim] {last.filter_expression}")
         console.print(f"\n[green]Base sources:[/green] {', '.join(sources) if sources else '(none found)'}")
     if result.frontier_cut_off:
         console.print(f"\n[yellow]Truncated at --max-depth={max_depth}:[/yellow] {result.frontier_cut_off}")

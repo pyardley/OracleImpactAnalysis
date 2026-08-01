@@ -25,7 +25,7 @@ from sqlglot import exp
 from sqlglot.lineage import lineage as sqlglot_lineage
 
 from oia.graph.model import Edge, column_node_id, object_node_id
-from oia.lineage._common import lineage_leaves, schema_by_owner, table_ref
+from oia.lineage._common import lineage_leaves, schema_by_owner, summarize_path, table_ref
 from oia.lineage.plsql_statements import harvest_statements
 from oia.storage.sqlite_store import SqliteStore
 
@@ -39,7 +39,28 @@ def _unwrap_table(node) -> exp.Table | None:
     return inner if isinstance(inner, exp.Table) else None
 
 
-def _reads_from_edges(select_like, owner: str, unit_id: str, node_ids: set[str], exclude: str | None) -> list[Edge]:
+def _statement_filter_expression(parsed: exp.Expression, dialect: str = "oracle") -> str | None:
+    """WHERE / JOIN...ON / MERGE...ON conditions on a statement - eligibility
+    criteria (e.g. "only completed orders from active customers") that a
+    plain column-to-column edge wouldn't otherwise reveal."""
+    parts: list[str] = []
+    where = parsed.args.get("where")
+    if where is not None:
+        parts.append(where.sql(dialect=dialect))
+    if isinstance(parsed, exp.Merge):
+        on = parsed.args.get("on")
+        if on is not None:
+            parts.append(f"ON {on.sql(dialect=dialect)}")
+    for join in parsed.args.get("joins") or []:
+        on = join.args.get("on")
+        if on is not None:
+            parts.append(f"JOIN ON {on.sql(dialect=dialect)}")
+    return " AND ".join(parts) if parts else None
+
+
+def _reads_from_edges(
+    select_like, owner: str, unit_id: str, node_ids: set[str], exclude: str | None, filter_expr: str | None = None
+) -> list[Edge]:
     edges = []
     seen: set[str] = set()
     for tbl in select_like.find_all(exp.Table):
@@ -56,6 +77,7 @@ def _reads_from_edges(select_like, owner: str, unit_id: str, node_ids: set[str],
                 confidence="low",
                 method="plsql_static_analysis",
                 source_object=unit_id,
+                filter_expression=filter_expr,
             )
         )
     return edges
@@ -107,11 +129,12 @@ def _insert_select_column_edges(
         except Exception as exc:
             logger.debug("INSERT..SELECT column lineage failed for %s: %s", dst_col_id, exc)
             continue
-        for leaf in lineage_leaves(root):
+        for leaf, path in lineage_leaves(root):
             src_owner = leaf.source.db or owner
             src_id = column_node_id(src_owner, leaf.source.name, leaf.name.split(".")[-1])
             if src_id not in node_ids or src_id == dst_col_id:
                 continue
+            transform_expr, filter_expr = summarize_path(path, dialect="oracle")
             edges.append(
                 Edge(
                     edge_type="DERIVED_FROM",
@@ -120,9 +143,8 @@ def _insert_select_column_edges(
                     confidence="low",
                     method="plsql_static_analysis",
                     source_object=unit_id,
-                    transform_expression=(
-                        leaf.expression.sql(dialect="oracle") if leaf.expression is not None else None
-                    ),
+                    transform_expression=transform_expr,
+                    filter_expression=filter_expr,
                 )
             )
     return edges
@@ -139,7 +161,8 @@ def _statement_edges(
     edges: list[Edge] = []
 
     if isinstance(parsed, exp.Select):
-        edges += _reads_from_edges(parsed, owner, unit_id, node_ids, exclude=None)
+        filter_expr = _statement_filter_expression(parsed)
+        edges += _reads_from_edges(parsed, owner, unit_id, node_ids, exclude=None, filter_expr=filter_expr)
 
     elif isinstance(parsed, exp.Insert):
         target = parsed.this
@@ -153,6 +176,7 @@ def _statement_edges(
             return edges
         t_owner, t_name = table_ref(table, owner)
         tid = object_node_id(t_owner, t_name)
+        select_filter = _statement_filter_expression(parsed.expression) if isinstance(parsed.expression, exp.Select) else None
         if tid in node_ids:
             edges.append(
                 Edge(
@@ -162,6 +186,7 @@ def _statement_edges(
                     confidence="low",
                     method="plsql_static_analysis",
                     source_object=unit_id,
+                    filter_expression=select_filter,
                 )
             )
         if isinstance(parsed.expression, exp.Select):
@@ -169,11 +194,14 @@ def _statement_edges(
             edges += _insert_select_column_edges(
                 parsed, owner, t_owner, t_name, cols, node_ids, owner_schemas, unit_id
             )
-            edges += _reads_from_edges(parsed.expression, owner, unit_id, node_ids, exclude=tid)
+            edges += _reads_from_edges(
+                parsed.expression, owner, unit_id, node_ids, exclude=tid, filter_expr=select_filter
+            )
 
     elif isinstance(parsed, exp.Update):
         table = _unwrap_table(parsed.this)
         tid = None
+        filter_expr = _statement_filter_expression(parsed)
         if table is not None:
             t_owner, t_name = table_ref(table, owner)
             tid = object_node_id(t_owner, t_name)
@@ -186,13 +214,15 @@ def _statement_edges(
                         confidence="low",
                         method="plsql_static_analysis",
                         source_object=unit_id,
+                        filter_expression=filter_expr,
                     )
                 )
-        edges += _reads_from_edges(parsed, owner, unit_id, node_ids, exclude=tid)
+        edges += _reads_from_edges(parsed, owner, unit_id, node_ids, exclude=tid, filter_expr=filter_expr)
 
     elif isinstance(parsed, exp.Delete):
         table = _unwrap_table(parsed.this) or _unwrap_table(parsed.args.get("tables"))
         tid = None
+        filter_expr = _statement_filter_expression(parsed)
         if table is not None:
             t_owner, t_name = table_ref(table, owner)
             tid = object_node_id(t_owner, t_name)
@@ -205,13 +235,15 @@ def _statement_edges(
                         confidence="low",
                         method="plsql_static_analysis",
                         source_object=unit_id,
+                        filter_expression=filter_expr,
                     )
                 )
-        edges += _reads_from_edges(parsed, owner, unit_id, node_ids, exclude=tid)
+        edges += _reads_from_edges(parsed, owner, unit_id, node_ids, exclude=tid, filter_expr=filter_expr)
 
     elif isinstance(parsed, exp.Merge):
         table = _unwrap_table(parsed.this)
         tid = None
+        filter_expr = _statement_filter_expression(parsed)
         if table is not None:
             t_owner, t_name = table_ref(table, owner)
             tid = object_node_id(t_owner, t_name)
@@ -224,9 +256,10 @@ def _statement_edges(
                         confidence="low",
                         method="plsql_static_analysis",
                         source_object=unit_id,
+                        filter_expression=filter_expr,
                     )
                 )
-        edges += _reads_from_edges(parsed, owner, unit_id, node_ids, exclude=tid)
+        edges += _reads_from_edges(parsed, owner, unit_id, node_ids, exclude=tid, filter_expr=filter_expr)
 
     return edges
 

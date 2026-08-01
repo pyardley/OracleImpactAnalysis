@@ -49,7 +49,16 @@ class SqliteStore:
 
     def _ensure_schema(self) -> None:
         self.conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Additive, idempotent column migrations for existing databases -
+        `CREATE TABLE IF NOT EXISTS` alone won't add new columns to a table
+        that already exists from an older schema version."""
+        cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(graph_edges)")}
+        if "filter_expression" not in cols:
+            self.conn.execute("ALTER TABLE graph_edges ADD COLUMN filter_expression TEXT")
 
     # ---- raw extraction tables -------------------------------------------------
 
@@ -149,7 +158,10 @@ class SqliteStore:
         )
         self.bulk_insert(
             "graph_edges",
-            ["edge_id", "edge_type", "src_node_id", "dst_node_id", "confidence", "method", "source_object", "source_line_range", "transform_expression", "extracted_at"],
+            [
+                "edge_id", "edge_type", "src_node_id", "dst_node_id", "confidence", "method",
+                "source_object", "source_line_range", "transform_expression", "filter_expression", "extracted_at",
+            ],
             edges,
         )
         self.conn.commit()

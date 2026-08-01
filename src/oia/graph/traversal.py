@@ -29,6 +29,7 @@ class PathStep:
     method: str
     source_object: str | None = None
     transform_expression: str | None = None
+    filter_expression: str | None = None
 
 
 @dataclass
@@ -78,6 +79,7 @@ def _bfs(
                     method=data["method"],
                     source_object=data.get("source_object"),
                     transform_expression=data.get("transform_expression"),
+                    filter_expression=data.get("filter_expression"),
                 )
                 if data["confidence"] in LOW_CONFIDENCE:
                     result.incomplete = True
