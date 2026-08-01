@@ -1,63 +1,66 @@
-## Lineage of `RETAILDEMO.REPORT_CUSTOMERCHURNRISK.TotalNetAmount`
+## Lineage for `RETAILDEMO.REPORT_CUSTOMERCHURNRISK.TOTALNETAMOUNT`
 
-### Data Derivation Path
+**TOTALNETAMOUNT** is derived through the following multi-stage computation:
 
-**TotalNetAmount** in the report is derived from three source columns in the `RETAILDEMO.ORDERLINES` table:
+### Derivation Path:
 
-1. **RETAILDEMO.ORDERLINES.QUANTITY**
-2. **RETAILDEMO.ORDERLINES.UNITPRICE**
-3. **RETAILDEMO.ORDERLINES.DISCOUNTPCT**
+1. **Source columns from `RETAILDEMO.ORDERLINES`:**
+   - `QUANTITY`
+   - `UNITPRICE`
+   - `DISCOUNTPCT`
 
-These columns are combined through the stored procedure **RETAILDEMO.USP_BUILDREPORT_CUSTOMERCHURNRISK**, which
-calculates the total net amount (likely as: `SUM(QUANTITY * UNITPRICE * (1 - DISCOUNTPCT))`).
+2. **Calculation steps:**
+   - Each order line's net amount is calculated using the function `RETAILDEMO.FN_NETLINEAMOUNT()`:
 
-### Source Tables
+     ```
+     NET_AMOUNT = ROUND(QUANTITY × UNITPRICE × (1 - DISCOUNTPCT/100), 2)
+     ```
 
-The complete upstream lineage traces to:
+   - These line amounts are then summed per customer from completed orders only:
 
-- **RETAILDEMO.ORDERLINES** — the primary source table containing transaction line-item data
+     ```
+     TOTALNETAMOUNT = SUM(NETAMOUNT) for all order lines in Completed orders
+     ```
 
-### Important Notes on Confidence
+   - The result is wrapped with `NVL()` to handle NULL cases (defaulting to 0):
+     ```
+     TOTALNETAMOUNT = NVL(SUM(NETAMOUNT), 0)
+     ```
 
-⚠️ **Low Confidence Lineage**: All three edges from `ORDERLINES` columns to `TotalNetAmount` were detected with **low
-confidence** using **plsql_static_analysis**. This is because the actual SQL/PL-SQL logic in the stored procedure
-`USP_BUILDREPORT_CUSTOMERCHURNRISK` could not be fully resolved statically. The procedure likely contains dynamic SQL or
-complex calculations that the parser could not fully trace. The actual calculation formula and any intermediate
-transformations cannot be confirmed from static analysis alone.
+3. **Filter applied:**
+   - Only includes orders from **active customers** (`CUSTOMERS.ISACTIVE = 1`)
+   - Only includes orders with status **'Completed'**
 
-### Mermaid Diagram
+### Mermaid Diagram:
 
 ```mermaid
-graph TD
-    OL["RETAILDEMO.ORDERLINES<br/>Source Table"]
-    OL_QTY["ORDERLINES.QUANTITY"]
-    OL_UP["ORDERLINES.UNITPRICE"]
-    OL_DP["ORDERLINES.DISCOUNTPCT"]
+graph LR
+    A[(CUSTOMERS)] -->|JOIN| D
+    B[(ORDERS)] -->|JOIN<br/>STATUS=Completed| D
+    C[(ORDERLINES)] -->|JOIN| D
 
-    SP["RETAILDEMO.USP_BUILDREPORT_CUSTOMERCHURNRISK<br/>Stored Procedure"]
+    D -->|GROUP BY<br/>CUSTOMERID| E
+    E -->|SUM NETAMOUNT| F["TOTALNETAMOUNT<br/>(aggregated)"]
 
-    REPORT["RETAILDEMO.REPORT_CUSTOMERCHURNRISK<br/>Report Table"]
-    REPORT_TNA["REPORT_CUSTOMERCHURNRISK.TotalNetAmount"]
+    G[(STAGINGCUSTOMERSEGMENT)] -->|LEFT JOIN| H
+    F -->|JOIN| H
 
-    OL --> OL_QTY
-    OL --> OL_UP
-    OL --> OL_DP
+    H -->|SELECT & NVL| I
+    I -->|INSERT| J["REPORT_CUSTOMERCHURNRISK<br/>TOTALNETAMOUNT"]
 
-    OL_QTY -->|low confidence| SP
-    OL_UP -->|low confidence| SP
-    OL_DP -->|low confidence| SP
-
-    SP -->|WRITES_TO| REPORT
-    REPORT --> REPORT_TNA
+    C -->|QUANTITY<br/>UNITPRICE<br/>DISCOUNTPCT| K["FN_NETLINEAMOUNT()"]
+    K -->|per-line calculation| E
 ```
 
-### Summary
+### Confidence Notes:
 
-| Component          | Details                                                                                          |
-| ------------------ | ------------------------------------------------------------------------------------------------ |
-| **Report Column**  | RETAILDEMO.REPORT_CUSTOMERCHURNRISK.TotalNetAmount                                               |
-| **Source Columns** | RETAILDEMO.ORDERLINES.QUANTITY, UNITPRICE, DISCOUNTPCT                                           |
-| **Transformation** | Via RETAILDEMO.USP_BUILDREPORT_CUSTOMERCHURNRISK (calculation formula not statically resolvable) |
+All lineage edges for **TOTALNETAMOUNT** are marked as **"low" confidence** from `plsql_static_analysis`. This is
+because they are derived through complex PL/SQL within the procedure's multi-stage CTE structure. However, I have
+confirmed the exact logic by inspecting the procedure source code and the underlying `FN_NETLINEAMOUNT()` function, so
+the derivation chain above is accurate.
 
-|
-| **Confidence Level** | Low (PL/SQL static analysis) |
+The column ultimately traces back to three base columns in `RETAILDEMO.ORDERLINES`:
+
+- `RETAILDEMO.ORDERLINES.QUANTITY`
+- `RETAILDEMO.ORDERLINES.UNITPRICE`
+- `RETAILDEMO.ORDERLINES.DISCOUNTPCT`

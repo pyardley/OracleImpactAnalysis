@@ -48,14 +48,59 @@ Everything else — which schemas to include, how "reports" are identified, whic
 Anthropic model to use — is configured in `config/config.yaml` (checked into
 git, no secrets). See [Configuration](#configuration) below.
 
+## Creating a test database (optional)
+
+If you don't already have an Oracle schema to point OIA at, [`database/`](database/)
+contains everything needed to build the exact RetailDemo schema this README's
+examples use — 19 tables, 2 functions, 5 views, 7 procedures, 5 triggers, and
+37,640 rows of seed data — against **any empty Oracle schema**.
+
+```bash
+# point .env at an EMPTY schema/user first, then:
+uv run python database/run_all.py
+```
+
+This creates the tables, functions, views, procedures, and triggers, loads the
+seed data (FK constraints and triggers are disabled during the bulk load and
+re-enabled — with validation — afterward), and finally calls the report
+procedures to populate the derived `STAGING*`/`REPORT_*` tables the same way
+they're maintained in normal operation. `AUDITLOG` is deliberately left empty —
+it's a pure event log and repopulates itself once the audit triggers fire on
+real activity, rather than being seeded with fake history.
+
+It refuses to run if any target table already exists, so it's safe against
+accidentally pointing it at a schema you're already using:
+
+```console
+$ uv run python database/run_all.py
+Refusing to run: 19 target table(s) already exist in this schema (e.g. AUDITLOG).
+Pass --force to DROP and rebuild, or point ORACLE_DSN/ORACLE_USER at an empty schema.
+```
+
+Other flags:
+
+```
+--force          DROP every object this script knows about first, then rebuild
+                  (destructive - only pass this when you deliberately want to
+                  wipe and rebuild the CURRENT schema)
+--skip-data       Create tables/functions/views/procedures/triggers only
+--skip-derived    Objects + base data, but don't populate STAGING*/REPORT_*
+```
+
+`database/generate_data_scripts.py` regenerates `database/data/*.sql` from
+whatever database `.env` currently points at, for refreshing the seed-data
+snapshot from a live reference instance.
+
 ## Quick start
 
 Pull the schema and build the lineage graph:
 
 ```console
 $ uv run oia extract
-Extracted 19 objects.
-Graph: 147 nodes, 14 edges, 0 parse errors.
+Extracted 38 objects.
+Graph: 218 nodes, 259 edges, 0 parse errors.
+  confidence=high: 126
+  confidence=low: 119
   confidence=manual: 1
   confidence=medium: 13
 ```
@@ -75,18 +120,28 @@ Ask what breaks if a table changes:
 $ uv run oia impact REGIONS
 Impact of changing RETAILDEMO.REGIONS (max-depth=10):
 
-+-----------------------------------------+
-| Object                | Type  | Report? |
-|-----------------------+-------+---------|
-| RETAILDEMO.CUSTOMERS  | TABLE |         |
-| RETAILDEMO.EMPLOYEES  | TABLE |         |
-| RETAILDEMO.WAREHOUSES | TABLE |         |
-+-----------------------------------------+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━┓
+┃ Object                                          ┃ Type      ┃ Report? ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━┩
+│ RETAILDEMO.CUSTOMERS                            │ TABLE     │         │
+│ RETAILDEMO.EMPLOYEES                            │ TABLE     │         │
+│ RETAILDEMO.REPORT_CUSTOMERCHURNRISK             │ TABLE     │ yes     │
+│ RETAILDEMO.REPORT_MONTHLYSALESBYREGION          │ TABLE     │ yes     │
+│ RETAILDEMO.STAGINGCOMPLETEDORDERLINES           │ TABLE     │         │
+│ RETAILDEMO.STAGINGCUSTOMERSEGMENT               │ TABLE     │         │
+│ RETAILDEMO.USP_BUILDREPORT_MONTHLYSALESBYREGION │ PROCEDURE │         │
+│ RETAILDEMO.VW_ACTIVEINVENTORYSTATUS             │ VIEW      │         │
+│ RETAILDEMO.VW_EMPLOYEEREGIONMAP                 │ VIEW      │         │
+│ RETAILDEMO.VW_ORDERLINEDETAIL                   │ VIEW      │         │
+│ RETAILDEMO.WAREHOUSES                           │ TABLE     │         │
+└─────────────────────────────────────────────────┴───────────┴─────────┘
 ```
 
-That result comes from real foreign-key relationships in the schema
-(`CUSTOMERS.REGIONID → REGIONS.REGIONID`, etc.) — object-level impact like this
-is always available, even before any view/procedure lineage has been parsed.
+That flows through real foreign-key relationships (`CUSTOMERS.REGIONID →
+REGIONS.REGIONID`, etc.), views, and procedures alike — object-level impact
+via FK is always available even before any parsing succeeds; here it's also
+walked into two views, a procedure, and two reports, flagging the
+low-confidence (heuristically-parsed) hops along the way.
 
 Or just ask in plain English (requires `ANTHROPIC_API_KEY`):
 
@@ -149,17 +204,26 @@ oia impact <OBJECT | OWNER.OBJECT | OWNER.OBJECT.COLUMN> [--max-depth N] [--repo
 
 ```console
 $ uv run oia graph stats
-Last run: #1 (full) started 2026-07-30 13:36:23, finished 2026-07-30 13:36:45
-  objects_processed=19 objects_failed=0 parse_errors=0
+Last run: #7 (full) started 2026-08-01 12:11:54, finished 2026-08-01 12:12:20
+  objects_processed=38 objects_failed=0 parse_errors=0
 
-Nodes: 147
-  COLUMN: 128
+Nodes: 218
+  COLUMN: 180
+  FUNCTION: 2
+  PROCEDURE: 7
   TABLE: 19
+  TRIGGER: 5
+  VIEW: 5
 
-Edges: 14
-  DERIVED_FROM: 1
-  REFERENCES: 13
+Edges: 259
+  CALLS: 9
+  DERIVED_FROM: 135
+  READS_FROM: 29
+  REFERENCES: 70
+  WRITES_TO: 16
 Confidence breakdown:
+  high: 126
+  low: 119
   manual: 1
   medium: 13
 
@@ -217,6 +281,23 @@ for the anti-hallucination design. Requires `ANTHROPIC_API_KEY` in `.env`.
 ```
 oia ask "<question>" [--model MODEL] [--effort low|medium|high] [--json]
 ```
+
+Example — a full impact-analysis question, including a rendered diagram:
+
+```console
+$ uv run oia ask "Show how dbo.Report_CustomerChurnRisk is derived. Trace back to source tables. Output should include a mermaid diagram."
+```
+
+(`dbo.` is SQL Server naming, not Oracle's — included here deliberately to show
+the agent resolves it anyway via `search_objects` rather than failing on the
+mismatch; plain Oracle object names like `Report_CustomerChurnRisk` work just
+as well.)
+
+See [ChurnRisk.md](ChurnRisk.md) for the full example output: the report's
+source tables, a stage-by-stage breakdown of the procedure's CTE pipeline
+(including the exact `FN_NETLINEAMOUNT(...)` formula and the
+`ISACTIVE`/`STATUS='Completed'` eligibility filters), confidence caveats, and
+a rendered Mermaid diagram.
 
 ## Configuration
 
@@ -282,6 +363,9 @@ phased delivery plan, and explicit non-goals.
 
 ```
 config/                  config.yaml, lineage_overrides.yaml
+database/                scripts to build the RetailDemo schema from scratch
+  data/                   seed data (generated by generate_data_scripts.py)
+  run_all.py              master orchestrator - see "Creating a test database"
 src/oia/
   extraction/             Oracle data-dictionary extraction
   lineage/                sqlglot-based DDL + PL/SQL lineage parsing
